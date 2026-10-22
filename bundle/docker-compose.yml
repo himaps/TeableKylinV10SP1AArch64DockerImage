@@ -1,0 +1,74 @@
+version: '2.4'
+
+# Teable 离线部署编排(镜像均来自随包 images/*.tar，导入后无需任何外网)
+# 版本 pin 与 workflow env 中的 POSTGRES_IMAGE/REDIS_IMAGE 保持一致
+
+services:
+  teable:
+    image: teable:${TEABLE_VERSION:?请在 .env 中设置 TEABLE_VERSION}
+    restart: always
+    ports:
+      - '${APP_PORT:-3000}:3000'
+    env_file:
+      - .env
+    environment:
+      - TZ=${TIMEZONE:-Asia/Shanghai}
+      - NEXT_ENV_IMAGES_ALL_REMOTE=true
+      # 麒麟 V10 SP1 内核 4.19 无 io_uring(5.1 引入)，显式关闭 libuv 的 io_uring
+      - UV_USE_IO_URING=0
+    volumes:
+      - teable-data:/app/.assets:rw
+    networks:
+      - teable
+    depends_on:
+      teable-db:
+        condition: service_healthy
+      teable-cache:
+        condition: service_healthy
+
+  teable-db:
+    image: postgres:15.4-alpine
+    restart: always
+    # 映射到宿主 42345 供内网调试/桌面客户端直连，不需要可注释掉
+    ports:
+      - '42345:5432'
+    volumes:
+      - teable-db:/var/lib/postgresql/data:rw
+    environment:
+      - TZ=${TIMEZONE:-Asia/Shanghai}
+      - POSTGRES_DB=${POSTGRES_DB:?请在 .env 中设置}
+      - POSTGRES_USER=${POSTGRES_USER:?请在 .env 中设置}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?请在 .env 中设置}
+    networks:
+      - teable
+    healthcheck:
+      test: ['CMD-SHELL', "sh -c 'pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}'"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  teable-cache:
+    image: redis:7.2.4-alpine
+    restart: always
+    expose:
+      - '6379'
+    volumes:
+      - teable-cache:/data:rw
+    networks:
+      - teable
+    command: redis-server --appendonly yes --requirepass "${REDIS_PASSWORD:?请在 .env 中设置}"
+    healthcheck:
+      test: ['CMD', 'redis-cli', '--raw', 'incr', 'ping']
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+networks:
+  teable:
+    name: teable-network
+    driver: bridge
+
+volumes:
+  teable-data: {}
+  teable-db: {}
+  teable-cache: {}

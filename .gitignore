@@ -1,0 +1,6 @@
+.mimosa/
+dist/
+.scratch-*
+*.tar
+*.tar.gz
+bundle/.env
