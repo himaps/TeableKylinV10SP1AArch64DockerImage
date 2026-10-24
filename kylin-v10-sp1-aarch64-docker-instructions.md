@@ -172,6 +172,11 @@ bash install.sh        # 导入镜像 → 生成 .env → 启动 → 就绪等�
 8. **本地核验与 CI 网络环境不同**: 本地(国内)直连不了 Docker Hub/GitHub，核验走
    国内源 + registry API 匿名 token；CI(arm runner)直连没问题。两条路径都要能独立核验，
    结论(尤其 tag 存在性)以 registry API 实查为准，不以文档或印象为准。
+9. **push 触发时 `inputs.*` 全为空**: workflow_dispatch 的 input default 只对手动触发
+   生效，push/自动触发走的是 step 脚本里的 `${VAR:-兜底值}`——两处双写必须同步改
+   (实际踩过: 改了 input default 没改兜底，push 构建以旧版本号出包)。且
+   `gh release upload --clobber` 回退会**覆盖**同名 release 的既有资产，版本号打错
+   时旧资产会被静默替换——push 构建后要核对 release 资产体积/内容是否与预期一致。
 
 ## 6. 新软件打包 Checklist(速查)
 

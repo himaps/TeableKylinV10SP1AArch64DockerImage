@@ -46,7 +46,8 @@ jobs:
           IN_EXTRA: ${{ inputs.extra_packages }}
         run: |
           set -euo pipefail
-          VER="${IN_VER:-1.0.0}"
+          # push 触发时 inputs 为空，走这里的兜底值——必须与上方 input default 保持一致
+          VER="${IN_VER:-1.1.0}"
           BASE="${IN_BASE:-ubuntu:20.04}"
           EXTRA="${IN_EXTRA:-}"
           echo "$VER" | grep -qE '^[A-Za-z0-9._-]+$' || { echo "非法版本号: $VER" >&2; exit 1; }
