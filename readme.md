@@ -38,9 +38,13 @@ teable 1.10.0 官方 standalone 编排即 teable + postgres + redis 三件套(�
 
 ## 构建环境镜像(builder，第二条流水线)
 
-除 teable 部署包外，仓库还有一条独立流水线: 构建一个装好 build-essential(gcc/g++ 9.4)、
-cmake、ninja、git、python3、gdb、libssl-dev 等工具链的**构建环境镜像**，供离线物理机把
-源码目录挂载进容器编译(物理机本身无需安装任何编译器)。
+除 teable 部署包外，仓库还有一条独立流水线: 构建一个装全 **C/C++ 工具链**
+(build-essential、gcc-10、clang、gfortran)、**构建系统**(cmake/ninja/meson/autotools)、
+**40+ 常用开发库**(openssl/zlib/boost/eigen/icu/protobuf/glib2/json/图片库…)、
+python3(含 venv/pip/setuptools)、gdb/valgrind 的**构建环境镜像**，供离线物理机把
+源码目录挂载进容器编译(物理机本身无需安装任何编译器)。语言生态第三方依赖
+(pip/cargo/go/npm)与麒麟内核模块头文件不在镜像覆盖范围内，离线准备方法见
+`builder/README.txt` 的"完全离线构建的边界"。
 
 - 触发: Actions → **Build arm64 offline builder image (Kylin V10 SP1)**(可传版本号、
   基座镜像、`extra_packages` 追加 apt 包)，或改动 `builder/**` 自动构建

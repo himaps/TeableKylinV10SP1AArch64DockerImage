@@ -8,9 +8,9 @@ on:
   workflow_dispatch:
     inputs:
       builder_version:
-        description: '镜像版本号(如 1.0.0)'
+        description: '镜像版本号(如 1.1.0)'
         required: false
-        default: '1.0.0'
+        default: '1.1.0'
       base_image:
         description: '基座镜像(需含 arm64；默认 ubuntu:20.04，glibc 2.31 与麒麟一致)'
         required: false
@@ -130,8 +130,10 @@ jobs:
             echo "镜像内工具链(容器内实查):"
           } >> "$B/MANIFEST.txt"
           docker run --rm "builder:${VER}" bash -c \
-            'gcc --version | head -1; g++ --version | head -1; make --version | head -1; \
-             cmake --version | head -1; ninja --version; git --version; python3 --version' \
+            'gcc --version | head -1; g++ --version | head -1; \
+             gcc-10 --version | head -1; clang --version | head -1; gfortran --version | head -1; \
+             make --version | head -1; cmake --version | head -1; meson --version; ninja --version; \
+             git --version; python3 --version' \
             | sed 's/^/  /' >> "$B/MANIFEST.txt"
           ASSET="builder-offline-arm64-${VER}.tar.gz"
           tar -czf "dist/${ASSET}" -C dist builder-offline
