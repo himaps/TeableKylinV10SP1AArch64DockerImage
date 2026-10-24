@@ -2,7 +2,9 @@
 
 > 本指南从 Teable 1.10.0 离线包的实际构建与物理机验证(2026-10)中提炼，是给"下一款软件"用的
 > 通用操作手册。为新软件打包时，以本仓库为蓝本复制结构，按第 3 节逐项替换。
-> 蓝本流水线: `.github/workflows/build.yaml` + `bundle/` 模板 + `tools/` 核验脚本。
+> 蓝本流水线: `.github/workflows/build.yaml` + `bundle/` 模板 + `tools/` 核验脚本；
+> "构建环境型"镜像的变体见 §7(蓝本 `builder/` + `.github/workflows/build-builder.yaml`)。
+> 仓库计划更名为 `kylin-v10-sp1-aarch-docker-hubs`(多镜像枢纽，总索引见根 readme.md)。
 
 ## 1. 目标与产出形态
 
