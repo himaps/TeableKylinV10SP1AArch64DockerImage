@@ -1,0 +1,191 @@
+name: Build arm64 offline builder image (Kylin V10 SP1)
+
+# 在 GitHub 原生 arm64 runner 上构建一个带 build-essential/g++/cmake 等工具链的
+# 构建环境镜像，打成离线包发布到 Releases，供离线麒麟物理机 docker load 后
+# 挂载源码目录编译软件。基座 glibc 必须不高于宿主(麒麟桌面 V10 SP1 = 2.31)，
+# 故默认 ubuntu:20.04(glibc 恰为 2.31，产物可直接跑在宿主机)。
+on:
+  workflow_dispatch:
+    inputs:
+      builder_version:
+        description: '镜像版本号(如 1.0.0)'
+        required: false
+        default: '1.0.0'
+      base_image:
+        description: '基座镜像(需含 arm64；默认 ubuntu:20.04，glibc 2.31 与麒麟一致)'
+        required: false
+        default: 'ubuntu:20.04'
+      extra_packages:
+        description: '额外 apt 包(空格分隔，可选，如 gcc-10 g++-10 libxml2-dev)'
+        required: false
+        default: ''
+      publish_release:
+        description: '发布到 GitHub Releases'
+        type: boolean
+        required: false
+        default: true
+  push:
+    branches: [main]
+    paths: ['.github/workflows/build-builder.yaml', 'builder/**']
+
+permissions:
+  contents: write
+
+jobs:
+  pack:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve inputs
+        id: ver
+        env:
+          IN_VER: ${{ inputs.builder_version }}
+          IN_BASE: ${{ inputs.base_image }}
+          IN_EXTRA: ${{ inputs.extra_packages }}
+        run: |
+          set -euo pipefail
+          VER="${IN_VER:-1.0.0}"
+          BASE="${IN_BASE:-ubuntu:20.04}"
+          EXTRA="${IN_EXTRA:-}"
+          echo "$VER" | grep -qE '^[A-Za-z0-9._-]+$' || { echo "非法版本号: $VER" >&2; exit 1; }
+          echo "$BASE" | grep -qE '^[A-Za-z0-9._/:_-]+$' || { echo "非法镜像名: $BASE" >&2; exit 1; }
+          echo "$EXTRA" | grep -qE '^[A-Za-z0-9 .,+-]*$' || { echo "非法 apt 包列表: $EXTRA" >&2; exit 1; }
+          {
+            echo "ver=$VER"
+            echo "base=$BASE"
+            echo "extra=$EXTRA"
+            echo "release_tag=builder-v${VER}"
+          } >> "$GITHUB_OUTPUT"
+          echo "builder 版本: $VER | 基座: $BASE | 额外包: ${EXTRA:-无}"
+
+      - name: Pull base image (arm64)
+        env:
+          BASE: ${{ steps.ver.outputs.base }}
+        run: |
+          set -euo pipefail
+          for i in 1 2 3; do
+            docker pull --platform linux/arm64 "$BASE" && exit 0
+            echo "pull 失败，重试 $i/3: $BASE"
+            sleep 15
+          done
+          echo "pull 最终失败: $BASE" >&2
+          exit 1
+
+      - name: Build builder image
+        env:
+          VER: ${{ steps.ver.outputs.ver }}
+          EXTRA: ${{ steps.ver.outputs.extra }}
+        run: |
+          set -euo pipefail
+          docker build --platform linux/arm64 \
+            --build-arg EXTRA_PACKAGES="$EXTRA" \
+            -t "builder:${VER}" builder/
+          docker image ls builder
+
+      - name: Verify architecture is arm64
+        env:
+          VER: ${{ steps.ver.outputs.ver }}
+        run: |
+          set -euo pipefail
+          arch=$(docker image inspect --format '{{.Architecture}}' "builder:${VER}")
+          echo "builder:${VER} -> $arch"
+          [ "$arch" = "arm64" ] || { echo "产物不是 arm64，终止打包" >&2; exit 1; }
+
+      - name: Save images tar
+        env:
+          VER: ${{ steps.ver.outputs.ver }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist/builder-offline/images
+          docker save "builder:${VER}" -o dist/builder-offline/images/builder-offline-images-arm64.tar
+          du -h dist/builder-offline/images/builder-offline-images-arm64.tar
+          # 载荷自检: tar 里必须有 manifest.json(避免打出空包)
+          tar -tf dist/builder-offline/images/builder-offline-images-arm64.tar > /tmp/tar-list.txt
+          grep -q manifest.json /tmp/tar-list.txt
+
+      - name: Assemble offline bundle
+        env:
+          VER: ${{ steps.ver.outputs.ver }}
+          BASE: ${{ steps.ver.outputs.base }}
+          EXTRA: ${{ steps.ver.outputs.extra }}
+        run: |
+          set -euo pipefail
+          B=dist/builder-offline
+          cp builder/README.txt "$B/"
+          BASE_GLIBC=$(docker run --rm "$BASE" ldd --version 2>/dev/null | head -1 || echo '未知')
+          {
+            echo "组件与来源(构建于 $(date -u +%Y-%m-%dT%H:%M:%SZ)):"
+            echo "  builder     ${VER}   base: ${BASE}"
+            echo "  额外 apt 包: ${EXTRA:-无}"
+            echo "  基座 glibc:  ${BASE_GLIBC}"
+            echo "目标环境: 银河麒麟 V10 SP1 / aarch64 / 内核 4.19+ / Docker 20.10+"
+            echo
+            echo "基座镜像 digest:"
+          } > "$B/MANIFEST.txt"
+          docker image inspect --format '{{index .RepoDigests 0}}' "$BASE" >> "$B/MANIFEST.txt" || true
+          {
+            echo ""
+            echo "镜像内工具链(容器内实查):"
+          } >> "$B/MANIFEST.txt"
+          docker run --rm "builder:${VER}" bash -c \
+            'gcc --version | head -1; g++ --version | head -1; make --version | head -1; \
+             cmake --version | head -1; ninja --version; git --version; python3 --version' \
+            | sed 's/^/  /' >> "$B/MANIFEST.txt"
+          ASSET="builder-offline-arm64-${VER}.tar.gz"
+          tar -czf "dist/${ASSET}" -C dist builder-offline
+          sha256sum "dist/${ASSET}" | tee dist/SHA256SUMS.txt
+          du -h "dist/${ASSET}"
+          echo "asset=${ASSET}" >> "$GITHUB_ENV"
+          echo "base_glibc=${BASE_GLIBC}" >> "$GITHUB_ENV"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: builder-offline-arm64-${{ steps.ver.outputs.ver }}
+          path: |
+            dist/${{ env.asset }}
+            dist/SHA256SUMS.txt
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Publish release
+        if: ${{ github.event_name == 'push' || inputs.publish_release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.ver.outputs.release_tag }}
+          VER: ${{ steps.ver.outputs.ver }}
+          BASE: ${{ steps.ver.outputs.base }}
+          EXTRA: ${{ steps.ver.outputs.extra }}
+          BASE_GLIBC: ${{ env.base_glibc }}
+        run: |
+          set -euo pipefail
+          ASSET="builder-offline-arm64-${VER}.tar.gz"
+          {
+            echo "## arm64 离线构建环境 (Kylin V10 SP1)"
+            echo
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| builder 镜像 | builder:${VER} |"
+            echo "| 基座 | ${BASE} (${BASE_GLIBC:-未知}) |"
+            echo "| 额外 apt 包 | ${EXTRA:-无} |"
+            echo
+            echo "目标环境: 银河麒麟 V10 SP1 / aarch64 / 内核 4.19+ / Docker 20.10+。"
+            echo "基座 glibc 与麒麟 V10 SP1 桌面版一致(2.31)，容器内编译产物可直接在宿主机运行。"
+            echo
+            echo "用法: 解压后 \`docker load -i builder-offline/images/*.tar\`，然后"
+            echo "\`docker run --rm -v \"\$PWD\":/src -w /src builder:${VER} <编译命令>\`。"
+            echo "详见包内 README.txt 与仓库 README.md。"
+          } > dist/RELEASE_NOTES.md
+          for i in 1 2 3; do
+            if gh release create "$TAG" "dist/${ASSET}" dist/SHA256SUMS.txt \
+                --title "arm64 构建环境镜像 v${VER} 离线包 (Kylin V10 SP1)" \
+                --notes-file dist/RELEASE_NOTES.md --target "$GITHUB_SHA"; then
+              exit 0
+            fi
+            echo "release create 失败，重试 $i/3"
+            sleep 10
+          done
+          # tag 已存在等情况: 改为追加覆盖上传资产
+          gh release upload "$TAG" "dist/${ASSET}" dist/SHA256SUMS.txt --clobber

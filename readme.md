@@ -36,6 +36,21 @@ teable 1.10.0 官方 standalone 编排即 teable + postgres + redis 三件套(�
 
 推送到 main 且改动涉及 `bundle/**` 或 workflow 本身时也会自动构建。
 
+## 构建环境镜像(builder，第二条流水线)
+
+除 teable 部署包外，仓库还有一条独立流水线: 构建一个装好 build-essential(gcc/g++ 9.4)、
+cmake、ninja、git、python3、gdb、libssl-dev 等工具链的**构建环境镜像**，供离线物理机把
+源码目录挂载进容器编译(物理机本身无需安装任何编译器)。
+
+- 触发: Actions → **Build arm64 offline builder image (Kylin V10 SP1)**(可传版本号、
+  基座镜像、`extra_packages` 追加 apt 包)，或改动 `builder/**` 自动构建
+- 基座: `ubuntu:20.04` —— glibc 恰为 2.31，与麒麟 V10 SP1 桌面版一致，容器内编译的
+  C/C++ 产物可直接在宿主机运行(选 22.04+ 产物会报 GLIBC 版本过高跑不起来)
+- 产物: `builder-offline-arm64-<版本>.tar.gz` = 单镜像 `builder:<版本>` + README + MANIFEST，
+  导入即 `docker load`
+- 用法: `docker run --rm -v "$PWD":/src -w /src builder:<版本> <编译命令>`
+  (加 `-u "$(id -u):$(id -g)"` 可避免产物文件属于 root)
+
 ## 离线机部署(Kylin V10 SP1)
 
 前提：aarch64、内核 4.19+(V10 SP1 满足)、Docker 20.10+ 且有 compose v2 插件(或 docker-compose)、磁盘余量 3GB。
@@ -75,8 +90,14 @@ bash install.sh        # 导入镜像 → 生成 .env → compose up → 等待�
 ## 仓库结构
 
 ```
-.github/workflows/build.yaml   构建与发布流水线(arm64 runner)
-bundle/                        离线包内容模板(compose/env/脚本/包内说明)
+.github/workflows/build.yaml          teable 部署包构建与发布流水线(arm64 runner)
+.github/workflows/build-builder.yaml  构建环境镜像(builder)流水线
+bundle/                        teable 离线包内容模板(compose/env/脚本/包内说明)
+builder/                       构建环境镜像模板(Dockerfile + 包内说明)
 tools/inspect-manifests.sh     核验镜像源 manifest 架构
 tools/image-size.py            核验镜像压缩体积
 ```
+
+要为**其他软件**打包同款离线包: 复制本仓库结构，按
+[kylin-v10-sp1-aarch64-docker-instructions.md](kylin-v10-sp1-aarch64-docker-instructions.md)
+逐项替换即可(teable 实测流程提炼的通用手册，含适配红线、步骤与 checklist)。
