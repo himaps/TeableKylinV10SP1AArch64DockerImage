@@ -13,6 +13,7 @@
 |---|---|---|---|
 | teable (+postgres/redis) | 多维表格离线部署包(含 compose/install.sh 一键部署) | [v1.10.0-arm64](https://github.com/himaps/TeableKylinV10SP1AArch64DockerImage/releases/tag/v1.10.0-arm64) | [readme-teable.md](readme-teable.md) |
 | builder | 编译沙箱(build-essential/gcc/clang/cmake/40+开发库)，物理机挂源码目录进容器编译 | [builder-v1.1.0](https://github.com/himaps/TeableKylinV10SP1AArch64DockerImage/releases/tag/builder-v1.1.0) | [readme-builder.md](readme-builder.md) |
+| onlyoffice (+nextcloud/postgres/redis/nginx) | 局域网多用户协同编辑 docx/xlsx 离线部署包(DS 编辑内核保排版) | [onlyoffice-v8.3.3-arm64](https://github.com/himaps/TeableKylinV10SP1AArch64DockerImage/releases/tag/onlyoffice-v8.3.3-arm64) | [readme-onlyoffice.md](readme-onlyoffice.md) |
 
 新镜像在此表登记。
 
@@ -39,7 +40,7 @@
 
 - [kylin-v10-sp1-aarch64-docker-instructions.md](kylin-v10-sp1-aarch64-docker-instructions.md)
   —— 通用打包手册(适配红线/打包步骤/checklist/踩坑记录)
-- [readme-teable.md](readme-teable.md) / [readme-builder.md](readme-builder.md) —— 各镜像分册
+- [readme-teable.md](readme-teable.md) / [readme-builder.md](readme-builder.md) / [readme-onlyoffice.md](readme-onlyoffice.md) —— 各镜像分册
 - 各离线包内 `README.txt` —— 面向离线机部署人的操作说明
 
 ## 仓库结构
@@ -47,13 +48,16 @@
 ```
 .github/workflows/build.yaml          teable 部署包流水线(arm64 runner)
 .github/workflows/build-builder.yaml  构建环境镜像(builder)流水线
+.github/workflows/build-onlyoffice.yaml  onlyoffice 协同编辑部署包流水线
 bundle/                        teable 离线包内容模板(compose/env/脚本/包内说明)
+bundle-onlyoffice/             onlyoffice 离线包内容模板(compose/nginx/env/脚本/包内说明)
 builder/                       构建环境镜像模板(Dockerfile + 包内说明)
 tools/inspect-manifests.sh     核验镜像源 manifest 架构
 tools/image-size.py            核验镜像压缩体积
 tools/watch-ci.py              匿名轮询 CI 状态(硬编码仓库路径，更名后需同步改)
 readme-teable.md               teable 分册
 readme-builder.md              builder 分册
+readme-onlyoffice.md           onlyoffice 分册
 kylin-v10-sp1-aarch64-docker-instructions.md   通用打包手册
 ```
 

@@ -1,0 +1,269 @@
+name: Build OnlyOffice arm64 offline bundle (Kylin V10 SP1)
+
+# 在 GitHub 原生 arm64 runner 上拉取 onlyoffice/documentserver + nextcloud 等
+# 官方多架构镜像的 arm64 变体 + 下载 nextcloud 协同连接器，打成离线部署包
+# 发布到 Releases 供离线麒麟物理机导入。架构说明见 readme-onlyoffice.md。
+on:
+  workflow_dispatch:
+    inputs:
+      ds_version:
+        description: 'documentserver 版本(官方多架构 tag，不含 -arm64 后缀，如 8.3.3)'
+        required: false
+        default: '8.3.3'
+      nc_version:
+        description: 'nextcloud 版本(-apache 变体，如 30.0.12)'
+        required: false
+        default: '30.0.12'
+      connector_version:
+        description: 'onlyoffice 连接器版本(GitHub release tag，如 v10.2.1)'
+        required: false
+        default: 'v10.2.1'
+      publish_release:
+        description: '发布到 GitHub Releases'
+        type: boolean
+        required: false
+        default: true
+  push:
+    branches: [main]
+    paths: ['.github/workflows/build-onlyoffice.yaml', 'bundle-onlyoffice/**']
+
+permissions:
+  contents: write
+
+env:
+  # 全部为官方多架构镜像，runner 上以 --platform linux/arm64 拉取
+  # 注意: 版本与 bundle-onlyoffice/env.example 中的 DS_VERSION/NC_VERSION 需保持一致
+  DS_IMAGE: onlyoffice/documentserver
+  POSTGRES_IMAGE: postgres:15.4-alpine
+  REDIS_IMAGE: redis:7.2.4-alpine
+  NGINX_IMAGE: nginx:1.27-alpine
+  CONNECTOR_DL: https://github.com/ONLYOFFICE/onlyoffice-nextcloud/releases/download
+
+jobs:
+  pack:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve versions
+        id: ver
+        env:
+          IN_DS: ${{ inputs.ds_version }}
+          IN_NC: ${{ inputs.nc_version }}
+          IN_CONNECTOR: ${{ inputs.connector_version }}
+        run: |
+          set -euo pipefail
+          # push 触发时 inputs 为空，兜底值必须与上方 input default 双写保持一致
+          DS="${IN_DS:-8.3.3}"
+          NC="${IN_NC:-30.0.12}"
+          CONNECTOR="${IN_CONNECTOR:-v10.2.1}"
+          for v in "$DS" "$NC" "${CONNECTOR#v}"; do
+            echo "$v" | grep -qE '^[A-Za-z0-9._-]+$' || { echo "非法版本号: $v" >&2; exit 1; }
+          done
+          echo "$CONNECTOR" | grep -qE '^v[0-9]' || CONNECTOR="v${CONNECTOR}"
+          {
+            echo "ds=$DS"
+            echo "nc=$NC"
+            echo "connector=$CONNECTOR"
+            echo "asset_base=onlyoffice-offline-arm64-${DS}-nc${NC}"
+            echo "release_tag=onlyoffice-v${DS}-arm64"
+          } >> "$GITHUB_OUTPUT"
+          echo "documentserver=$DS nextcloud=$NC 连接器=$CONNECTOR"
+
+      - name: Download onlyoffice connector app
+        env:
+          CONNECTOR: ${{ steps.ver.outputs.connector }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist/onlyoffice-offline/apps
+          URL="${CONNECTOR_DL}/${CONNECTOR}/onlyoffice.tar.gz"
+          for i in 1 2 3; do
+            curl -fL --retry 3 -o dist/onlyoffice-offline/apps/onlyoffice-${CONNECTOR}.tar.gz "$URL" && break
+            echo "下载失败，重试 $i/3: $URL"; sleep 15
+          done
+          # 载荷自检: 必须是连接器应用包
+          tar -tzf dist/onlyoffice-offline/apps/onlyoffice-${CONNECTOR}.tar.gz | grep -q '^onlyoffice/appinfo/info.xml'
+
+      - name: Pull arm64 images
+        env:
+          DS: ${{ steps.ver.outputs.ds }}
+          NC: ${{ steps.ver.outputs.nc }}
+        run: |
+          set -euo pipefail
+          NC_SRC="nextcloud:${NC}-apache"
+          pull() {
+            for i in 1 2 3; do
+              docker pull --platform linux/arm64 "$1" && return 0
+              echo "pull 失败，重试 $i/3: $1"; sleep 15
+            done
+            echo "pull 最终失败: $1" >&2; exit 1
+          }
+          pull "${DS_IMAGE}:${DS}"
+          pull "$NC_SRC"
+          pull "$POSTGRES_IMAGE"
+          pull "$REDIS_IMAGE"
+          pull "$NGINX_IMAGE"
+
+      - name: Verify architectures are arm64
+        env:
+          DS: ${{ steps.ver.outputs.ds }}
+          NC: ${{ steps.ver.outputs.nc }}
+        run: |
+          set -euo pipefail
+          fail=0
+          for img in "${DS_IMAGE}:${DS}" "nextcloud:${NC}-apache" \
+                     "$POSTGRES_IMAGE" "$REDIS_IMAGE" "$NGINX_IMAGE"; do
+            arch=$(docker image inspect --format '{{.Architecture}}' "$img")
+            echo "$img -> $arch"
+            [ "$arch" = "arm64" ] || fail=1
+          done
+          [ "$fail" = 0 ] || { echo "存在非 arm64 镜像，终止打包" >&2; exit 1; }
+
+      - name: Retag and save images tars
+        env:
+          DS: ${{ steps.ver.outputs.ds }}
+          NC: ${{ steps.ver.outputs.nc }}
+        run: |
+          set -euo pipefail
+          NC_SRC="nextcloud:${NC}-apache"
+          docker tag "$NC_SRC" "nextcloud:${NC}"
+          mkdir -p dist/onlyoffice-offline/images
+          docker save "${DS_IMAGE}:${DS}" -o dist/onlyoffice-offline/images/onlyoffice-docs-images-arm64.tar
+          docker save "nextcloud:${NC}" "$POSTGRES_IMAGE" "$REDIS_IMAGE" "$NGINX_IMAGE" \
+            -o dist/onlyoffice-offline/images/suite-images-arm64.tar
+          du -h dist/onlyoffice-offline/images/*.tar
+          # 载荷自检: 两个 tar 都必须有 manifest.json(避免打出空包)
+          for t in dist/onlyoffice-offline/images/*.tar; do
+            tar -tf "$t" | grep -q manifest.json
+          done
+          # 先落盘 RepoDigests(prune 之后镜像即不可查)
+          docker image inspect --format '{{index .RepoDigests 0}}' "${DS_IMAGE}:${DS}" \
+            > dist/onlyoffice-offline/images.digests.txt
+          docker image inspect --format '{{index .RepoDigests 0}}' "nextcloud:${NC}" \
+            >> dist/onlyoffice-offline/images.digests.txt
+          # 释放 docker 存储给后续 gzip 留磁盘余量
+          docker image prune -af
+
+      - name: Validate compose and nginx config
+        env:
+          DS: ${{ steps.ver.outputs.ds }}
+          NC: ${{ steps.ver.outputs.nc }}
+        run: |
+          set -euo pipefail
+          # compose 语法/变量完整性(与 install.sh 实际用法同源)
+          env DS_VERSION="$DS" NC_VERSION="$NC" SERVER_IP=192.0.2.10 \
+              POSTGRES_DB=nc POSTGRES_USER=nc POSTGRES_PASSWORD=x REDIS_PASSWORD=x \
+              JWT_SECRET=x NEXTCLOUD_ADMIN_PASSWORD=x \
+              docker compose -f bundle-onlyoffice/docker-compose.yml config -q
+          # nginx 语法校验(把容器名上游替换成 127.0.0.1 以便离线解析)
+          docker run --rm -v "$PWD/bundle-onlyoffice/nginx:/w:ro" "$NGINX_IMAGE" sh -c '
+            sed -e "s#http://nextcloud:80#http://127.0.0.1:65535#" \
+                -e "s#http://documentserver#http://127.0.0.1:65534#" \
+                /w/conf.d/default.conf > /tmp/t.conf
+            printf "events {}\nhttp { include /tmp/t.conf; }\n" > /tmp/nginx.conf
+            nginx -t -c /tmp/nginx.conf'
+
+      - name: Assemble offline bundle
+        env:
+          DS: ${{ steps.ver.outputs.ds }}
+          NC: ${{ steps.ver.outputs.nc }}
+          CONNECTOR: ${{ steps.ver.outputs.connector }}
+        run: |
+          set -euo pipefail
+          B=dist/onlyoffice-offline
+          cp bundle-onlyoffice/docker-compose.yml bundle-onlyoffice/env.example \
+             bundle-onlyoffice/install.sh bundle-onlyoffice/uninstall.sh \
+             bundle-onlyoffice/README.txt "$B/"
+          mkdir -p "$B/nginx/conf.d"
+          cp bundle-onlyoffice/nginx/conf.d/default.conf "$B/nginx/conf.d/"
+          chmod +x "$B"/*.sh
+          cat > "$B/MANIFEST.txt" <<EOF
+          组件版本与来源(构建于 $(date -u +%Y-%m-%dT%H:%M:%SZ)):
+            documentserver    ${DS}   source: ${DS_IMAGE}:${DS} (docker hub 官方多架构镜像)
+            nextcloud         ${NC}   source: nextcloud:${NC}-apache (docker hub 官方镜像)
+            postgres          ${POSTGRES_IMAGE}
+            redis             ${REDIS_IMAGE}
+            nginx             ${NGINX_IMAGE}
+            onlyoffice连接器  ${CONNECTOR}   source: ${CONNECTOR_DL}/${CONNECTOR}/onlyoffice.tar.gz
+          目标环境: 银河麒麟 V10 SP1 / aarch64 / 内核 4.19+ / Docker 20.10+(compose 插件或 v1)
+          说明: documentserver 按官方默认行为使用容器内自带 PostgreSQL/RabbitMQ，并已按
+                ONLYOFFICE 官方麒麟指南配置 seccomp=unconfined 规避老版 docker seccomp 拦截。
+          EOF
+          cat "$B/images.digests.txt" >> "$B/MANIFEST.txt" && rm -f "$B/images.digests.txt"
+
+      - name: Package, checksum and split if needed
+        env:
+          ASSET_BASE: ${{ steps.ver.outputs.asset_base }}
+        run: |
+          set -euo pipefail
+          ASSET="dist/${ASSET_BASE}.tar.gz"
+          tar -czf "$ASSET" -C dist onlyoffice-offline
+          SIZE=$(stat -c%s "$ASSET")
+          du -h "$ASSET"
+          # GitHub Release 单资产上限 2GiB: 超限切成 1900MB 分包(下载后 cat 合并)
+          LIMIT=$((1900 * 1024 * 1024))
+          if [ "$SIZE" -gt "$LIMIT" ]; then
+            split -d -b 1900M "$ASSET" "${ASSET}.part-"
+            rm -f "$ASSET"
+            sha256sum "${ASSET}".part-* | tee dist/SHA256SUMS.txt
+            echo "[信息] 超过 2GiB，已分包: $(ls dist/${ASSET_BASE}.tar.gz.part-* | tr '\n' ' ')"
+          else
+            sha256sum "$ASSET" | tee dist/SHA256SUMS.txt
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.ver.outputs.asset_base }}
+          path: |
+            dist/${{ steps.ver.outputs.asset_base }}.tar.gz*
+            dist/SHA256SUMS.txt
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Publish release
+        if: ${{ github.event_name == 'push' || inputs.publish_release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.ver.outputs.release_tag }}
+          DS: ${{ steps.ver.outputs.ds }}
+          NC: ${{ steps.ver.outputs.nc }}
+          CONNECTOR: ${{ steps.ver.outputs.connector }}
+          ASSET_BASE: ${{ steps.ver.outputs.asset_base }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## ONLYOFFICE 在线协同编辑 aarch64 离线部署包 (Kylin V10 SP1)"
+            echo
+            echo "| 组件 | 版本 |"
+            echo "|---|---|"
+            echo "| documentserver | ${DS} (arm64) |"
+            echo "| nextcloud | ${NC} (arm64) |"
+            echo "| postgres / redis / nginx | 15.4-alpine / 7.2.4-alpine / 1.27-alpine |"
+            echo "| onlyoffice 连接器 | ${CONNECTOR} |"
+            echo
+            echo "架构: nginx(80 唯一入口) → nextcloud(用户/文件/共享) + documentserver(docx/xlsx 协同内核)。"
+            echo "目标环境: 银河麒麟 V10 SP1 / aarch64 / 内核 4.19+，Docker 20.10+ 与 Compose。"
+            echo
+            echo "### 下载与部署"
+            echo "1. 下载全部 \`.tar.gz\`/\`.part-XX\` 文件与 \`SHA256SUMS.txt\`，校验: \`sha256sum -c SHA256SUMS.txt\`"
+            echo "2. 分包时先合并: \`cat ${ASSET_BASE}.tar.gz.part-* > bundle.tar.gz\`"
+            echo "3. 解压: \`tar -xzf <包>.tar.gz && cd onlyoffice-offline\`"
+            echo "4. 部署: \`bash install.sh\` (自动生成 .env 与随机密码、自动配置协同连接器)"
+            echo "5. 浏览器访问 http://<内网IP> ，管理员账号见包内 .env"
+            echo
+            echo "详细说明见包内 README.txt 与仓库 readme-onlyoffice.md。"
+          } > dist/RELEASE_NOTES.md
+          ASSETS=$(ls dist/${ASSET_BASE}.tar.gz* dist/SHA256SUMS.txt)
+          for i in 1 2 3; do
+            if gh release create "$TAG" $ASSETS \
+                --title "ONLYOFFICE ${DS} + Nextcloud ${NC} arm64 离线部署包 (Kylin V10 SP1)" \
+                --notes-file dist/RELEASE_NOTES.md --target "$GITHUB_SHA"; then
+              exit 0
+            fi
+            echo "release create 失败，重试 $i/3"
+            sleep 10
+          done
+          # tag 已存在等情况：改为追加覆盖上传资产
+          gh release upload "$TAG" $ASSETS --clobber

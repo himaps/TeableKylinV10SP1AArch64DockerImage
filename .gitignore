@@ -4,3 +4,4 @@ dist/
 *.tar
 *.tar.gz
 bundle/.env
+bundle-onlyoffice/.env

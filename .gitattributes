@@ -4,3 +4,6 @@
 *.yml text eol=lf
 bundle/env.example text eol=lf
 bundle/README.txt text eol=lf
+bundle-onlyoffice/env.example text eol=lf
+bundle-onlyoffice/README.txt text eol=lf
+bundle-onlyoffice/nginx/conf.d/default.conf text eol=lf
